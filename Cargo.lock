@@ -449,6 +449,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "display-interface",
  "display-interface-spi",
  "embedded-graphics",
  "embedded-graphics-core",
