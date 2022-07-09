@@ -9,9 +9,6 @@ description = "A port of OxidGB to the Raspberry Pi Pico"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#paste = "1.0"
-#bitflags = "1.2.1"
-
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 embedded-hal = { version = "0.2.5", features = ["unproven"] }
@@ -22,20 +19,13 @@ defmt-rtt = "0.3"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 alloc-cortex-m = "*"
 
-#rp2040-pac = { git = "https://github.com/rp-rs/rp2040-pac", branch="main" }
-#rp2040-panic-usb-boot = "*"
-#rp2040-boot2 = "0.1.0"
-
-
 rp-pico = "0.4"
 
 embedded-graphics-core = "0.3.2"
 embedded-graphics = "0.7"
 profont = "0.6.1"
-#
+
 display-interface-spi = "0.4.1"
-#
-#st7789 = {git = "https://github.com/almindor/st7789", rev="24968a36149751cef2c9ec28048906f2f07f8d3f"}
 
 st7789 = { git = "https://github.com/almindor/st7789", rev = "e0fd943611afbb502f907198118539a608f51ca1" }
 
