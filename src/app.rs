@@ -9,14 +9,13 @@ use embedded_graphics::{
     Drawable,
 };
 
-use core::{cmp::min, fmt::Debug};
+use core::fmt::Debug;
 
 use defmt::*;
 
-use crate::{AcceleratedBlit, GAME_DATA};
+use crate::{AcceleratedBlit, BlitBuffer, GAME_DATA};
 
 use oxidgb_core::cpu::CPU;
-use oxidgb_core::gpu::PITCH;
 use oxidgb_core::mem::GBMemory;
 use oxidgb_core::rom::GameROM;
 
@@ -40,11 +39,13 @@ pub struct DisplayProperties {
 /// * display: The display to render onto
 /// * palette: Colors to use when rendering the splash screen
 /// * properties: Display properties
+/// * blit_buffer: Buffer used for converting core graphics
 /// * delay: A timing source for sleeping before the loop starts
 pub fn run<D: DrawTarget + AcceleratedBlit, SleepFunc: FnOnce()>(
     mut display: D,
     palette: ColorPalette<D::Color>,
     properties: DisplayProperties,
+    mut blit_buffer: BlitBuffer,
     delay: SleepFunc,
 ) -> !
 where
@@ -124,42 +125,11 @@ where
 
     info!("Reached main loop!");
 
-    let mut framebuffer = vec![0u16; properties.display_width * properties.display_height/*  * 2*/];
-
-    info!("Framebuffer allocated.");
-
     display.clear(palette.clear_color).unwrap();
 
     loop {
         cpu.run();
 
-        let x_max = min(properties.display_width, 160);
-        let y_max = min(properties.display_height, 144);
-
-        let y_offset = (properties.display_height - y_max) / 2;
-        let x_offset = (properties.display_width - x_max) / 2;
-
-        // TODO: This isn't particularly efficient - change how the runtime works?
-        //       (generic framebuffer interface?)
-        for y in 0..y_max {
-            for x in 0..x_max {
-                let offset = (y * 160 + x) * PITCH;
-
-                let packed_rgb = ((cpu.mem.gpu.pixel_data[offset] as u16 & 0b11111000) << 8)
-                    | ((cpu.mem.gpu.pixel_data[offset + 1] as u16 & 0b11111100) << 3)
-                    | (cpu.mem.gpu.pixel_data[offset + 2] as u16 >> 3);
-
-                let buffer_ptr = (y + y_offset) * properties.display_width + (x + x_offset);
-                framebuffer[buffer_ptr] = packed_rgb;
-            }
-        }
-
-        display.set_pixels(
-            40,
-            53,
-            properties.display_width as u16 + properties.x_offset as u16 - 1,
-            properties.display_height as u16 + properties.y_offset as u16 - 1,
-            framebuffer.iter().map(|x| *x),
-        );
+        display.set_pixels(&cpu.mem.gpu, &properties, &mut blit_buffer);
     }
 }

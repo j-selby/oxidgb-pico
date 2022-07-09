@@ -11,15 +11,45 @@
 /// Path to your game data, relative to the `src/` directory.
 const GAME_DATA: &'static [u8] = include_bytes!("../pokemon.gb");
 
+/// Check that only one display driver is active
+#[cfg(any(
+    all(
+        feature = "st7789_display_driver",
+        any(feature = "ssd1306_display_driver")
+    ),
+    all(
+        feature = "ssd1306_display_driver",
+        any(feature = "st7789_display_driver")
+    )
+))]
+compile_error!("Only one display driver must be enabled!");
+
+/// Throw an error if no display drivers are enabled.
+#[cfg(not(any(feature = "st7789_display_driver", feature = "ssd1306_display_driver")))]
+compile_error!("One display driver must be enabled!");
+
+/// Check that only one frontend is active
+#[cfg(any(
+    all(feature = "pico_display", any(feature = "thumby")),
+    all(feature = "thumby", any(feature = "pico_display"))
+))]
+compile_error!("Only one device configuration must be enabled!");
+
+/// Throw an error if no frontends are enabled.
+#[cfg(not(any(feature = "pico_display", feature = "thumby")))]
+compile_error!("One device configuration must be enabled!");
+
 // ==========================================
 // RUNTIME SECTION
 // ==========================================
 
+use alloc::vec::Vec;
 use app::{ColorPalette, DisplayProperties};
 
 use cortex_m_rt::{exception, ExceptionFrame};
 use defmt::*;
 use defmt_rtt as _;
+use oxidgb_core::gpu::{GPU, PITCH};
 use panic_probe as _;
 
 #[macro_use]
@@ -32,13 +62,9 @@ use alloc_cortex_m::CortexMHeap;
 use rp_pico as bsp;
 // use sparkfun_pro_micro_rp2040 as bsp;
 
-use bsp::hal::{
-    self,
-    clocks::{init_clocks_and_plls, Clock},
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
-};
+#[cfg(feature = "st7789_display_driver")]
+use bsp::hal::Clock;
+use bsp::hal::{self, clocks::init_clocks_and_plls, pac, sio::Sio, watchdog::Watchdog};
 
 use embedded_hal::digital::v2::OutputPin;
 
@@ -46,12 +72,27 @@ use bsp::entry;
 
 use embedded_time::rate::units::Extensions;
 
-use core::fmt::Debug;
-use core::mem::MaybeUninit;
+use core::{cmp::min, mem::MaybeUninit};
 
+#[cfg(feature = "ssd1306_display_driver")]
+use embedded_graphics_core::pixelcolor::BinaryColor;
+
+#[cfg(feature = "ssd1306_display_driver")]
+use ssd1306::mode::DisplayConfig;
+
+#[cfg(feature = "st7789_display_driver")]
 use embedded_graphics_core::{pixelcolor::Rgb565, prelude::RgbColor};
 
 mod app;
+
+pub struct BlitBuffer {
+    #[cfg(feature = "st7789_display_driver")]
+    // properties.display_width * properties.display_height, RGB565
+    buffer: Vec<u16>,
+    #[cfg(feature = "ssd1306_display_driver")]
+    // (properties.display_width * properties.display_height) / 8, Binary
+    buffer: Vec<u8>,
+}
 
 /// Provides an interface to directly blit pixels to the screen.
 pub trait AcceleratedBlit {
@@ -61,15 +102,10 @@ pub trait AcceleratedBlit {
     ///
     /// # Arguments
     ///
-    /// * `sx` - x coordinate start
-    /// * `sy` - y coordinate start
-    /// * `ex` - x coordinate end
-    /// * `ey` - y coordinate end
-    /// * `colors` - anything that can provide `IntoIterator<Item = u16>` to iterate over pixel data
+    /// * `gpu` - core GPU
+    /// * `buffer` - pixel buffer for rendering
     ///
-    fn set_pixels<T>(&mut self, sx: u16, sy: u16, ex: u16, ey: u16, colors: T)
-    where
-        T: IntoIterator<Item = u16>;
+    fn set_pixels(&mut self, gpu: &GPU, properties: &DisplayProperties, buffer: &mut BlitBuffer);
 }
 
 #[cfg(feature = "st7789_display_driver")]
@@ -77,13 +113,72 @@ impl<DI, OUT> AcceleratedBlit for st7789::ST7789<DI, OUT>
 where
     DI: display_interface::WriteOnlyDataCommand,
     OUT: OutputPin,
-    OUT::Error: Debug,
+    OUT::Error: core::fmt::Debug,
 {
-    fn set_pixels<T>(&mut self, sx: u16, sy: u16, ex: u16, ey: u16, colors: T)
-    where
-        T: IntoIterator<Item = u16>,
-    {
-        self.set_pixels(sx, sy, ex, ey, colors).unwrap();
+    fn set_pixels(&mut self, gpu: &GPU, properties: &DisplayProperties, buffer: &mut BlitBuffer) {
+        let x_max = min(properties.display_width, 160);
+        let y_max = min(properties.display_height, 144);
+
+        let y_offset = (properties.display_height - y_max) / 2;
+        let x_offset = (properties.display_width - x_max) / 2;
+
+        for y in 0..y_max {
+            for x in 0..x_max {
+                let offset = (y * 160 + x) * PITCH;
+
+                let packed_rgb = ((gpu.pixel_data[offset] as u16 & 0b11111000) << 8)
+                    | ((gpu.pixel_data[offset + 1] as u16 & 0b11111100) << 3)
+                    | (gpu.pixel_data[offset + 2] as u16 >> 3);
+
+                let buffer_ptr = (y + y_offset) * properties.display_width + (x + x_offset);
+                buffer.buffer[buffer_ptr] = packed_rgb;
+            }
+        }
+
+        // TODO: This isn't particularly efficient
+        self.set_pixels(
+            properties.x_offset as u16,
+            properties.y_offset as u16,
+            properties.display_width as u16 + properties.x_offset as u16 - 1,
+            properties.display_height as u16 + properties.y_offset as u16 - 1,
+            buffer.buffer.iter().map(|x| *x),
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(feature = "ssd1306_display_driver")]
+impl<DI, SIZE> AcceleratedBlit
+    for ssd1306::Ssd1306<DI, SIZE, ssd1306::mode::BufferedGraphicsMode<SIZE>>
+where
+    DI: display_interface::WriteOnlyDataCommand,
+    SIZE: ssd1306::size::DisplaySize,
+{
+    fn set_pixels(&mut self, gpu: &GPU, properties: &DisplayProperties, buffer: &mut BlitBuffer) {
+        let x_max = min(properties.display_width, 160);
+        let y_max = min(properties.display_height, 144);
+
+        // Pack data for this screen
+        for y in 0..y_max {
+            for x in 0..x_max {
+                let offset = (y * 160 + x) * PITCH;
+                let on = gpu.pixel_data[offset] > 128;
+                let i = y * properties.display_width + x;
+                if on {
+                    buffer.buffer[i / 8] |= 1u8 << (i % 8);
+                } else {
+                    buffer.buffer[i / 8] &= !(1u8 << (i % 8));
+                }
+            }
+        }
+
+        self.bounded_draw(
+            &buffer.buffer,
+            properties.display_width,
+            (0, 0),
+            (x_max as u8, y_max as u8),
+        )
+        .unwrap();
     }
 }
 
@@ -236,8 +331,66 @@ fn main() -> ! {
         )
     };
 
-    // -- DISPLAY DRIVERS
+    #[cfg(feature = "thumby")]
+    let (properties, display_interface, display_size, display_rotation) = {
+        // https://github.com/TinyCircuits/TinyCircuits-Thumby-Lib/blob/master/src/Thumby.h
+        /*
+        #define THUMBY_CS_PIN 16
+        #define THUMBY_SCK_PIN 18
+        #define THUMBY_SDA_PIN 19
+        #define THUMBY_DC_PIN 17
+        #define THUMBY_RESET_PIN 20
 
+        #define THUMBY_BTN_LDPAD_PIN 3
+        #define THUMBY_BTN_RDPAD_PIN 5
+        #define THUMBY_BTN_UDPAD_PIN 4
+        #define THUMBY_BTN_DDPAD_PIN 6
+        #define THUMBY_BTN_B_PIN 24
+        #define THUMBY_BTN_A_PIN 27
+
+        #define THUMBY_AUDIO_PIN 28
+
+        #define THUMBY_SCREEN_RESET_PIN 20
+
+        #define THUMBY_SCREEN_WIDTH 72
+        #define THUMBY_SCREEN_HEIGHT 40
+        */
+
+        // Configure two pins as being I²C, not GPIO
+        let sda_pin = pins.gpio16.into_mode::<hal::gpio::FunctionI2C>();
+        let scl_pin = pins.gpio17.into_mode::<hal::gpio::FunctionI2C>();
+
+        // Create the I²C driver, using the two pre-configured pins. This will fail
+        // at compile time if the pins are in the wrong mode, or if this I²C
+        // peripheral isn't available on these pins!
+        let i2c = hal::I2C::i2c0(
+            pac.I2C0,
+            sda_pin,
+            scl_pin,
+            400.kHz(),
+            &mut pac.RESETS,
+            clocks.peripheral_clock,
+        );
+
+        let interface = ssd1306::I2CDisplayInterface::new(i2c);
+
+        // Set properties of the screen we are using
+        let properties = DisplayProperties {
+            display_width: 72,
+            display_height: 40,
+            x_offset: 0,
+            y_offset: 0,
+        };
+
+        (
+            properties,
+            interface,
+            ssd1306::size::DisplaySize72x40,
+            ssd1306::rotation::DisplayRotation::Rotate0,
+        )
+    };
+
+    // -- DISPLAY DRIVERS
     #[cfg(feature = "st7789_display_driver")]
     let (display, palette) = {
         let mut display = st7789::ST7789::new(
@@ -268,6 +421,38 @@ fn main() -> ! {
         (display, palette)
     };
 
+    #[cfg(feature = "ssd1306_display_driver")]
+    let (display, palette) = {
+        // Create a driver instance and initialize:
+        let mut display = ssd1306::Ssd1306::new(display_interface, display_size, display_rotation)
+            .into_buffered_graphics_mode();
+        display.init().unwrap();
+
+        let palette = ColorPalette {
+            splash_bg: BinaryColor::Off,
+            text_color: BinaryColor::On,
+            clear_color: BinaryColor::Off,
+        };
+
+        (display, palette)
+    };
+
+    info!("Display initialized.");
+
     // -- MAIN APP START
-    app::run(display, palette, properties, || delay.delay_ms(2000))
+    #[cfg(feature = "st7789_display_driver")]
+    let blit_buffer = BlitBuffer {
+        buffer: vec![0u16; properties.display_width * properties.display_height],
+    };
+
+    #[cfg(feature = "ssd1306_display_driver")]
+    let blit_buffer = BlitBuffer {
+        buffer: vec![0u8; (properties.display_width * properties.display_height) / 8],
+    };
+
+    info!("Framebuffer allocated.");
+
+    app::run(display, palette, properties, blit_buffer, || {
+        delay.delay_ms(2000)
+    })
 }
