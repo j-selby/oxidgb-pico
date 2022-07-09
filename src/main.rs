@@ -9,7 +9,7 @@
 // ==========================================
 
 /// Path to your game data, relative to the `src/` directory.
-const GAME_DATA: &'static [u8] = include_bytes!("../kirby.gb");
+const GAME_DATA: &'static [u8] = include_bytes!("../pokemon.gb");
 
 // ==========================================
 // RUNTIME SECTION
@@ -17,6 +17,7 @@ const GAME_DATA: &'static [u8] = include_bytes!("../kirby.gb");
 
 use app::{ColorPalette, DisplayProperties};
 
+use cortex_m_rt::{exception, ExceptionFrame};
 use defmt::*;
 use defmt_rtt as _;
 use panic_probe as _;
@@ -92,13 +93,8 @@ const HEAP_SIZE: usize = 245 * 1024;
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-/// An out of memory handler
-#[alloc_error_handler]
-fn oom(layout: core::alloc::Layout) -> ! {
-    error!("Out of memory!");
-    error!("Stats: {}, {}", ALLOCATOR.used(), ALLOCATOR.free());
-    error!("Attempted to allocate: {}", layout.size());
-
+/// Crash indicator
+fn crash_loop() -> ! {
     // Try to configure a blinking LED - steal all interfaces and assume that
     // core 1 is dead at this point.
     let (mut pac, cp) = unsafe { (pac::Peripherals::steal(), pac::CorePeripherals::steal()) };
@@ -123,6 +119,39 @@ fn oom(layout: core::alloc::Layout) -> ! {
         led_pin.set_low().unwrap();
         delay.delay_ms(500);
     }
+}
+
+/// An out of memory handler
+#[alloc_error_handler]
+fn oom(layout: core::alloc::Layout) -> ! {
+    error!("Out of memory!");
+    error!(
+        "Used: {} bytes, free: {} bytes",
+        ALLOCATOR.used(),
+        ALLOCATOR.free()
+    );
+    error!("Attempted to allocate {} bytes", layout.size());
+
+    crash_loop()
+}
+
+/// Hard fault error handler
+#[exception]
+unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
+    error!("Hard fault!");
+    error!(
+        "r0={:x}, r1={:x}, r2={:x}, r3={:x}, r12={:x}, lr={:x}, pc={:x}, xpsr={:x}",
+        ef.r0(),
+        ef.r1(),
+        ef.r2(),
+        ef.r3(),
+        ef.r12(),
+        ef.lr(),
+        ef.pc(),
+        ef.xpsr()
+    );
+
+    crash_loop()
 }
 
 #[entry]
