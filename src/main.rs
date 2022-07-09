@@ -2,178 +2,247 @@
 
 #![no_std]
 #![no_main]
-#![feature(core_intrinsics)]
-#![feature(default_alloc_error_handler)]
+#![feature(alloc_error_handler)]
 
 // ==========================================
 // CONFIGURATION SECTION
 // ==========================================
 
-/// Overclocking switch - disabling this will only use stock clocks for talking to
-/// peripherals.
-///
-/// While this should be safe (this doesn't tweak voltage, just the core PLL), I obviously
-/// am **not liable** for breaking your Pico.
-const DO_OVERCLOCK: bool = true;
-/// The PLL multiplier for any overclock applied.
-/// Stock is a multiplier of 15 (which is what is applied when `DO_OVERCLOCK` is set to false).
-const OVERCLOCK_MULTIPLIER: u32 = 30;
 /// Path to your game data, relative to the `src/` directory.
-const GAME_DATA: &'static [u8] = include_bytes!("../pokemon.gb");
+const GAME_DATA: &'static [u8] = include_bytes!("../kirby.gb");
 
 // ==========================================
 // RUNTIME SECTION
 // ==========================================
-
-#[macro_use]
-extern crate bitflags;
-
-extern crate rp2040_panic_usb_boot;
+use defmt::*;
+use defmt_rtt as _;
+use panic_probe as _;
 
 #[macro_use]
 extern crate alloc;
 
-mod pico_display;
-mod rp2040;
-mod st7789;
-
-use cortex_m_rt::entry;
-
 use alloc_cortex_m::CortexMHeap;
-use cortex_m::prelude::*;
+
+// Provide an alias for our BSP so we can switch targets quickly.
+// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
+use rp_pico as bsp;
+// use sparkfun_pro_micro_rp2040 as bsp;
+
+use bsp::hal::{
+    self,
+    clocks::{init_clocks_and_plls, Clock},
+    pac,
+    sio::Sio,
+    watchdog::Watchdog,
+};
+
+use embedded_hal::digital::v2::OutputPin;
+
+use bsp::entry;
+
+use embedded_time::rate::units::Extensions;
+use st7789::{Orientation, TearingEffect};
 
 use core::cmp::min;
+use core::mem::MaybeUninit;
 
-use embedded_graphics::fonts::Text;
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
+use embedded_graphics_core::{draw_target::DrawTarget, pixelcolor::Rgb565, prelude::RgbColor};
+
 use embedded_graphics::primitives::Rectangle;
-use embedded_graphics::style::{PrimitiveStyle, TextStyle};
+use embedded_graphics::primitives::*;
+use embedded_graphics::{
+    mono_font::MonoTextStyleBuilder,
+    prelude::*,
+    text::{Baseline, Text, TextStyle},
+};
 
 use oxidgb_core::cpu::CPU;
 use oxidgb_core::gpu::PITCH;
 use oxidgb_core::mem::GBMemory;
 use oxidgb_core::rom::GameROM;
 
-use crate::pico_display::PicoDisplay;
-
-#[link_section = ".boot_loader"]
-#[used]
-pub static BOOT_LOADER: [u8; 256] = rp2040_boot2::BOOT_LOADER;
+static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+const HEAP_SIZE: usize = 245 * 1024;
 
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-/// High-level object designed to store an RGB565 buffer and provide a
-/// stable interface to it regardless of what craziness is going on under
-/// the hood.
-struct PicoScreen<'a> {
-    framebuffer: &'a mut [u16],
-    width: usize,
-    height: usize,
-}
+#[alloc_error_handler]
+fn oom(layout: core::alloc::Layout) -> ! {
+    error!("Out of memory!");
+    error!("Stats: {}, {}", ALLOCATOR.used(), ALLOCATOR.free());
+    error!("Attempted to allocate: {}", layout.size());
 
-// Interface for embedded-graphics.
-impl<'a> DrawTarget<Rgb565> for PicoScreen<'a> {
-    type Error = core::convert::Infallible;
+    let (mut pac, cp) = unsafe { (pac::Peripherals::steal(), pac::CorePeripherals::steal()) };
 
-    fn draw_pixel(&mut self, pixel: Pixel<Rgb565>) -> Result<(), Self::Error> {
-        let Pixel(Point { x, y }, color) = pixel;
-        if !(0..self.width).contains(&(x as usize)) || !(0..self.height).contains(&(y as usize)) {
-            return Ok(());
-        }
+    let sio = Sio::new(pac.SIO);
 
-        self.framebuffer[y as usize * self.width + x as usize] = color.into_storage();
+    // Set the pins up according to their function on this particular board
+    let pins = rp_pico::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut pac.RESETS,
+    );
 
-        Ok(())
-    }
-
-    fn size(&self) -> Size {
-        Size::new(self.width as u32, self.height as u32)
-    }
-}
-
-#[no_mangle]
-#[entry]
-fn main() -> ! {
-    // Setup the allocator with a conservative heap.
-    let start = cortex_m_rt::heap_start() as usize;
-    let size = 200 * 1024; // in bytes
-    unsafe { ALLOCATOR.init(start, size) }
-
-    let mut pac = rp2040_pac::Peripherals::take().unwrap();
-    let cp = rp2040_pac::CorePeripherals::take().unwrap();
-
-    // Before we touch any peripherals, we need to setup clocks and so forth. Do this now:
-    rp2040::setup_chip(&mut pac, DO_OVERCLOCK, OVERCLOCK_MULTIPLIER);
+    let mut led_pin = pins.led.into_push_pull_output();
 
     let mut delay = cortex_m::delay::Delay::new(cp.SYST, 125_000_000);
 
-    let mut display = PicoDisplay::default_pimoroni(
-        &mut delay,
-        &pac.PWM,
-        &pac.PADS_BANK0,
-        &pac.IO_BANK0,
-        &pac.SIO,
-        &pac.RESETS,
-        pac.SPI0,
+    loop {
+        led_pin.set_high().unwrap();
+        delay.delay_ms(500);
+        led_pin.set_low().unwrap();
+        delay.delay_ms(500);
+    }
+}
+
+#[entry]
+fn main() -> ! {
+    // Setup the allocator with a conservative heap.
+    unsafe { ALLOCATOR.init(HEAP.as_ptr() as usize, HEAP_SIZE) }
+
+    let mut pac = pac::Peripherals::take().unwrap();
+    let cp = pac::CorePeripherals::take().unwrap();
+
+    let mut watchdog = Watchdog::new(pac.WATCHDOG);
+    let sio = Sio::new(pac.SIO);
+
+    // External high-speed crystal on the pico board is 12Mhz
+    let external_xtal_freq_hz = 12_000_000u32;
+    let clocks = init_clocks_and_plls(
+        external_xtal_freq_hz,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .ok()
+    .unwrap();
+
+    // Set the pins up according to their function on this particular board
+    let pins = rp_pico::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut pac.RESETS,
     );
 
-    display.set_display_backlight(&pac.PWM, 100);
+    let mut led_pin = pins.led.into_push_pull_output();
+    led_pin.set_low().unwrap();
+
+    let mut delay = cortex_m::delay::Delay::new(cp.SYST, 125_000_000);
+
+    // These are implicitly used by the spi driver if they are in the correct mode
+    let _spi_sclk = pins.gpio18.into_mode::<hal::gpio::FunctionSpi>();
+    let _spi_mosi = pins.gpio19.into_mode::<hal::gpio::FunctionSpi>();
+    // We're using what would normally be the miso pin for data/command
+    let dc = pins.gpio16.into_push_pull_output();
+    // Chip select
+    let cs = pins.gpio17.into_push_pull_output();
+    // Backlight
+    let bl = pins.gpio21.into_push_pull_output();
+
+    let spi = bsp::hal::Spi::<_, _, 8>::new(pac.SPI0);
+
+    let spi = spi.init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        //16_000_000u32.Hz(),
+        32_000_000u32.Hz(),
+        &embedded_hal::spi::MODE_3,
+    );
+
+    let display_interface = display_interface_spi::SPIInterface::new(spi, dc, cs);
+
+    const DISPLAY_WIDTH: usize = 240;
+    const DISPLAY_HEIGHT: usize = 135;
+
+    const DISPLAY_X_OFFSET: usize = 40;
+    const DISPLAY_Y_OFFSET: usize = 53;
+
+    let mut display = st7789::ST7789::new(
+        display_interface,
+        None,
+        Some(bl),
+        DISPLAY_WIDTH as _,
+        DISPLAY_HEIGHT as _,
+    );
+
+    // initialize
+    display.init(&mut delay).unwrap();
+    // set default orientation
+    display.set_orientation(Orientation::Landscape).unwrap();
+    display
+        .set_tearing_effect(TearingEffect::HorizontalAndVertical)
+        .unwrap();
+
+    //display.set_display_backlight(&pac.PWM, 100);
 
     let rom = GameROM::build(GAME_DATA);
 
-    let mut framebuffer = vec![0u16; display.get_width() * display.get_height()];
-
-    let mut screen = PicoScreen {
-        framebuffer: &mut framebuffer,
-        width: display.get_width(),
-        height: display.get_height(),
-    };
+    info!("{}", rom.get_cart_name());
 
     // Draw a splash screen:
     let fill = PrimitiveStyle::with_fill(Rgb565::new(50, 50, 180));
-    let text_style = TextStyle::new(profont::ProFont24Point, Rgb565::WHITE);
-    let small_text_style = TextStyle::new(profont::ProFont10Point, Rgb565::WHITE);
 
-    let y_offset = screen.height as i32 / 2;
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&profont::PROFONT_24_POINT)
+        .text_color(Rgb565::WHITE)
+        .build();
+
+    let small_text_style = MonoTextStyleBuilder::new()
+        .font(&profont::PROFONT_10_POINT)
+        .text_color(Rgb565::WHITE)
+        .build();
+
+    let text_render_style = TextStyle::with_baseline(Baseline::Top);
+
+    let y_offset = DISPLAY_HEIGHT as i32 / 2;
+
+    display.clear(Rgb565::BLACK).unwrap();
 
     // Text background:
     Rectangle::new(
-        Point::new(0, y_offset - 18),
-        Point::new(screen.width as _, y_offset + 18),
+        Point::new(
+            0 + DISPLAY_X_OFFSET as i32,
+            y_offset - 18 + DISPLAY_Y_OFFSET as i32,
+        ),
+        Size::new(DISPLAY_WIDTH as _, (y_offset + 18) as u32),
     )
     .into_styled(fill)
-    .draw(&mut screen)
+    .draw(&mut display)
     .unwrap();
 
     let text = "Oxidgb";
     let width = text.len() as i32 * 16;
-    Text::new(
+    Text::with_text_style(
         text,
         Point::new(
-            screen.width as i32 / 2 - width / 2,
-            screen.height as i32 / 2 - 18,
+            DISPLAY_WIDTH as i32 / 2 - width / 2 + DISPLAY_X_OFFSET as i32,
+            DISPLAY_HEIGHT as i32 / 2 - 18 + DISPLAY_Y_OFFSET as i32,
         ),
+        text_style,
+        text_render_style,
     )
-    .into_styled(text_style)
-    .draw(&mut screen)
+    .draw(&mut display)
     .unwrap();
 
-    let text = format!("Booting \"{}\"...", rom.get_cart_name());
+    let text = rom.get_cart_name();
     let width = text.len() as i32 * 7;
-    Text::new(
+    Text::with_text_style(
         &text,
         Point::new(
-            screen.width as i32 / 2 - width / 2,
-            screen.height as i32 / 2 + 50,
+            DISPLAY_WIDTH as i32 / 2 - width / 2 + DISPLAY_X_OFFSET as i32,
+            DISPLAY_HEIGHT as i32 / 2 + 50 + DISPLAY_Y_OFFSET as i32,
         ),
+        small_text_style,
+        text_render_style,
     )
-    .into_styled(small_text_style)
-    .draw(&mut screen)
+    .draw(&mut display)
     .unwrap();
-
-    display.draw(&pac.SIO, &screen.framebuffer);
 
     // Build memory
     let memory = GBMemory::build(rom);
@@ -184,15 +253,16 @@ fn main() -> ! {
     // Update the screen now everything is ready:
     let text = format!("Used RAM: {}, free: {}", ALLOCATOR.used(), ALLOCATOR.free());
     let width = text.len() as i32 * 7;
-    Text::new(
+    Text::with_text_style(
         &text,
         Point::new(
-            screen.width as i32 / 2 - width / 2,
-            screen.height as i32 / 2 - 65,
+            DISPLAY_WIDTH as i32 / 2 - width / 2 + DISPLAY_X_OFFSET as i32,
+            DISPLAY_HEIGHT as i32 / 2 - 65 + DISPLAY_Y_OFFSET as i32,
         ),
+        small_text_style,
+        text_render_style,
     )
-    .into_styled(small_text_style)
-    .draw(&mut screen)
+    .draw(&mut display)
     .unwrap();
 
     let text = format!(
@@ -200,32 +270,37 @@ fn main() -> ! {
         (GAME_DATA.as_ptr() as usize) + GAME_DATA.len() - 0x10000000
     );
     let width = text.len() as i32 * 7;
-    Text::new(
+    Text::with_text_style(
         &text,
         Point::new(
-            screen.width as i32 / 2 - width / 2,
-            screen.height as i32 / 2 - 55,
+            DISPLAY_WIDTH as i32 / 2 - width / 2 + DISPLAY_X_OFFSET as i32,
+            DISPLAY_HEIGHT as i32 / 2 - 55 + DISPLAY_Y_OFFSET as i32,
         ),
+        small_text_style,
+        text_render_style,
     )
-    .into_styled(small_text_style)
-    .draw(&mut screen)
+    .draw(&mut display)
     .unwrap();
 
-    display.draw(&pac.SIO, &screen.framebuffer);
-
     // We use the same buffer for the gameboy screen - clear it now:
-    embedded_graphics::DrawTarget::clear(&mut screen, Rgb565::BLACK).unwrap();
-
     delay.delay_ms(2000);
+
+    info!("Reached main loop!");
+
+    let mut framebuffer = vec![0u16; DISPLAY_WIDTH * DISPLAY_HEIGHT/*  * 2*/];
+
+    info!("Framebuffer allocated.");
+
+    display.clear(Rgb565::BLACK).unwrap();
 
     loop {
         cpu.run();
 
-        let x_max = min(display.get_width(), 160);
-        let y_max = min(display.get_height(), 144);
+        let x_max = min(DISPLAY_WIDTH, 160);
+        let y_max = min(DISPLAY_HEIGHT, 144);
 
-        let y_offset = (display.get_height() - y_max) / 2;
-        let x_offset = (display.get_width() - x_max) / 2;
+        let y_offset = (DISPLAY_HEIGHT - y_max) / 2;
+        let x_offset = (DISPLAY_WIDTH - x_max) / 2;
 
         // TODO: This isn't particularly efficient - change how the runtime works?
         //       (generic framebuffer interface?)
@@ -236,12 +311,20 @@ fn main() -> ! {
                 let packed_rgb = ((cpu.mem.gpu.pixel_data[offset] as u16 & 0b11111000) << 8)
                     | ((cpu.mem.gpu.pixel_data[offset + 1] as u16 & 0b11111100) << 3)
                     | (cpu.mem.gpu.pixel_data[offset + 2] as u16 >> 3);
-                screen.framebuffer[(y + y_offset) * display.get_width() + (x + x_offset)] =
-                    packed_rgb;
+
+                let buffer_ptr = (y + y_offset) * DISPLAY_WIDTH + (x + x_offset);
+                framebuffer[buffer_ptr] = packed_rgb;
             }
         }
 
-        // TODO: Get DMA working for this
-        display.draw(&pac.SIO, &screen.framebuffer);
+        display
+            .set_pixels(
+                40,
+                53,
+                DISPLAY_WIDTH as u16 + DISPLAY_X_OFFSET as u16 - 1,
+                DISPLAY_HEIGHT as u16 + DISPLAY_Y_OFFSET as u16 - 1,
+                framebuffer.iter().map(|x| *x),
+            )
+            .unwrap();
     }
 }
