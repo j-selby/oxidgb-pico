@@ -49,7 +49,10 @@ use app::{ColorPalette, DisplayProperties};
 use cortex_m_rt::{exception, ExceptionFrame};
 use defmt::*;
 use defmt_rtt as _;
-use oxidgb_core::gpu::{GPU, PITCH};
+use oxidgb_core::{
+    gpu::{GPU, PITCH},
+    input::{build_input, GameboyButton},
+};
 use panic_probe as _;
 
 #[macro_use]
@@ -82,6 +85,8 @@ use ssd1306::mode::DisplayConfig;
 
 #[cfg(feature = "st7789_display_driver")]
 use embedded_graphics_core::{pixelcolor::Rgb565, prelude::RgbColor};
+
+use embedded_hal::digital::v2::InputPin;
 
 mod app;
 
@@ -293,7 +298,7 @@ fn main() -> ! {
     // -- DISPLAY CONFIGURATIONS
 
     #[cfg(feature = "pico_display")]
-    let (properties, display_interface, bl) = {
+    let (properties, display_interface, bl, input) = {
         // Configure pins
         // These are implicitly used by the spi driver if they are in the correct mode
         let _spi_sclk = pins.gpio18.into_mode::<hal::gpio::FunctionSpi>();
@@ -324,15 +329,41 @@ fn main() -> ! {
             y_offset: 53,
         };
 
+        // Add input handling
+        let button_a = pins.gpio12.into_pull_up_input();
+        let button_b = pins.gpio13.into_pull_up_input();
+        let button_x = pins.gpio14.into_pull_up_input();
+        let button_y = pins.gpio15.into_pull_up_input();
+
+        let input_handler = move || {
+            let mut input: heapless::Vec<GameboyButton, 4> = heapless::Vec::new();
+
+            if button_a.is_low().unwrap() {
+                input.push(GameboyButton::A).unwrap();
+            }
+            if button_b.is_low().unwrap() {
+                input.push(GameboyButton::B).unwrap();
+            }
+            if button_x.is_low().unwrap() {
+                input.push(GameboyButton::START).unwrap();
+            }
+            if button_y.is_low().unwrap() {
+                input.push(GameboyButton::SELECT).unwrap();
+            }
+
+            build_input(&input)
+        };
+
         (
             properties,
             display_interface_spi::SPIInterface::new(spi, dc, cs),
             bl,
+            input_handler,
         )
     };
 
     #[cfg(feature = "thumby")]
-    let (properties, display_interface, display_size, display_rotation) = {
+    let (properties, display_interface, display_size, display_rotation, input) = {
         // https://github.com/TinyCircuits/TinyCircuits-Thumby-Lib/blob/master/src/Thumby.h
         /*
         #define THUMBY_CS_PIN 16
@@ -382,11 +413,48 @@ fn main() -> ! {
             y_offset: 0,
         };
 
+        // Add input handling
+        let button_l = pins.gpio3.into_pull_up_input();
+        let button_u = pins.gpio4.into_pull_up_input();
+        let button_r = pins.gpio5.into_pull_up_input();
+        let button_d = pins.gpio6.into_pull_up_input();
+
+        // TODO: Not supported under rp-pico
+        //let button_b = pins.gpio24.into_pull_up_input();
+        let button_a = pins.gpio27.into_pull_up_input();
+
+        let input_handler = move || {
+            let mut input: heapless::Vec<GameboyButton, 6> = heapless::Vec::new();
+
+            if button_a.is_low().unwrap() {
+                input.push(GameboyButton::A).unwrap();
+            }
+            /*if button_b.is_low().unwrap() {
+                input.push(GameboyButton::B).unwrap();
+            }*/
+
+            if button_l.is_low().unwrap() {
+                input.push(GameboyButton::LEFT).unwrap();
+            }
+            if button_u.is_low().unwrap() {
+                input.push(GameboyButton::UP).unwrap();
+            }
+            if button_r.is_low().unwrap() {
+                input.push(GameboyButton::RIGHT).unwrap();
+            }
+            if button_d.is_low().unwrap() {
+                input.push(GameboyButton::DOWN).unwrap();
+            }
+
+            build_input(&input)
+        };
+
         (
             properties,
             interface,
             ssd1306::size::DisplaySize72x40,
             ssd1306::rotation::DisplayRotation::Rotate0,
+            input_handler,
         )
     };
 
@@ -452,7 +520,12 @@ fn main() -> ! {
 
     info!("Framebuffer allocated.");
 
-    app::run(display, palette, properties, blit_buffer, || {
-        delay.delay_ms(2000)
-    })
+    app::run(
+        display,
+        palette,
+        properties,
+        blit_buffer,
+        || delay.delay_ms(2000),
+        input,
+    )
 }

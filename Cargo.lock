@@ -465,6 +465,7 @@ dependencies = [
  "embedded-graphics-core",
  "embedded-hal",
  "embedded-time",
+ "heapless",
  "oxidgb_core",
  "panic-probe",
  "profont",

@@ -16,8 +16,8 @@ use defmt::*;
 use crate::{AcceleratedBlit, BlitBuffer, GAME_DATA};
 
 use oxidgb_core::cpu::CPU;
-use oxidgb_core::mem::GBMemory;
 use oxidgb_core::rom::GameROM;
+use oxidgb_core::{input::GameboyInput, mem::GBMemory};
 
 /// Colors to use with the screen.
 pub struct ColorPalette<C: PixelColor> {
@@ -41,12 +41,13 @@ pub struct DisplayProperties {
 /// * properties: Display properties
 /// * blit_buffer: Buffer used for converting core graphics
 /// * delay: A timing source for sleeping before the loop starts
-pub fn run<D: DrawTarget + AcceleratedBlit, SleepFunc: FnOnce()>(
+pub fn run<D: DrawTarget + AcceleratedBlit, SleepFunc: FnOnce(), InputFunc: Fn() -> GameboyInput>(
     mut display: D,
     palette: ColorPalette<D::Color>,
     properties: DisplayProperties,
     mut blit_buffer: BlitBuffer,
     delay: SleepFunc,
+    input: InputFunc,
 ) -> !
 where
     D::Error: Debug,
@@ -128,6 +129,7 @@ where
     display.clear(palette.clear_color).unwrap();
 
     loop {
+        cpu.mem.buttons = input();
         cpu.run();
 
         display.set_pixels(&cpu.mem.gpu, &properties, &mut blit_buffer);

@@ -54,6 +54,10 @@ Pins:
 | SPI0 RX (DC)   | 21    | SPI bus   | GPIO16 |
 | SPI0 CS        | 22    | SPI bus   | GPIO17 |
 | GPIO20         | 26    | Backlight | GPIO20 |
+| GPIO12         | 16    | A Button  | GPIO12 |
+| GPIO13         | 17    | B Button  | GPIO13 |
+| GPIO14         | 19    | START     | GPIO14 |
+| GPIO15         | 20    | SELECT    | GPIO15 |
 
 ### Thumby (Untested!)
 

@@ -28,6 +28,8 @@ profont = "0.6.1"
 display-interface = { version = "0.4.1", optional = true }
 display-interface-spi ={ version = "0.4.1", optional = true }
 
+heapless = "0.7.15"
+
 st7789 = { git = "https://github.com/almindor/st7789", rev = "e0fd943611afbb502f907198118539a608f51ca1", optional = true }
 ssd1306 = { version = "0.7.0", optional = true }
 
