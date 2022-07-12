@@ -303,7 +303,7 @@ fn main() -> ! {
         // Chip select
         let cs = pins.gpio17.into_push_pull_output();
         // Backlight
-        let bl = pins.gpio21.into_push_pull_output();
+        let bl = pins.gpio20.into_push_pull_output();
 
         // Setup and init the SPI device
         let spi = bsp::hal::Spi::<_, _, 8>::new(pac.SPI0);
