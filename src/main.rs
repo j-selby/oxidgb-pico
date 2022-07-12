@@ -11,6 +11,13 @@
 /// Path to your game data, relative to the `src/` directory.
 const GAME_DATA: &'static [u8] = include_bytes!("../pokemon.gb");
 
+/// Overclocking switch - disabling this will only use stock clocks for talking to
+/// peripherals.
+///
+/// While this should be safe (this doesn't tweak voltage, just the core PLL), I obviously
+/// am **not liable** for breaking your Pico.
+const DO_OVERCLOCK: bool = true;
+
 /// Check that only one display driver is active
 #[cfg(any(
     all(
@@ -62,12 +69,12 @@ use alloc_cortex_m::CortexMHeap;
 
 // Provide an alias for our BSP so we can switch targets quickly.
 // Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
-use rp_pico as bsp;
+pub use rp_pico as bsp;
 // use sparkfun_pro_micro_rp2040 as bsp;
 
 #[cfg(feature = "st7789_display_driver")]
 use bsp::hal::Clock;
-use bsp::hal::{self, clocks::init_clocks_and_plls, pac, sio::Sio, watchdog::Watchdog};
+use bsp::hal::{self, pac, sio::Sio, watchdog::Watchdog};
 
 use embedded_hal::digital::v2::OutputPin;
 
@@ -89,6 +96,7 @@ use embedded_graphics_core::{pixelcolor::Rgb565, prelude::RgbColor};
 use embedded_hal::digital::v2::InputPin;
 
 mod app;
+mod clock;
 
 pub struct BlitBuffer {
     #[cfg(feature = "st7789_display_driver")]
@@ -267,19 +275,25 @@ fn main() -> ! {
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
 
-    // External high-speed crystal on the pico board is 12Mhz
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
+    let clocks = if DO_OVERCLOCK {
+        clock::configure_overclock(
+            pac.XOSC,
+            pac.CLOCKS,
+            pac.PLL_SYS,
+            pac.PLL_USB,
+            &mut pac.RESETS,
+            &mut watchdog,
+        )
+    } else {
+        clock::configure_default_clocks(
+            pac.XOSC,
+            pac.CLOCKS,
+            pac.PLL_SYS,
+            pac.PLL_USB,
+            &mut pac.RESETS,
+            &mut watchdog,
+        )
+    };
 
     // Set the pins up according to their function on this particular board
     let pins = rp_pico::Pins::new(
@@ -481,7 +495,7 @@ fn main() -> ! {
 
         // Set the color values used by this screen
         let palette = ColorPalette {
-            splash_bg: Rgb565::new(50, 50, 180),
+            splash_bg: Rgb565::new(10, 10, 250),
             text_color: Rgb565::WHITE,
             clear_color: Rgb565::BLACK,
         };

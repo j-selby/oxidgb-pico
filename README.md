@@ -4,6 +4,8 @@ OxidGB Pico Port
 This is a simple, display-only (*for now*) port of [OxidGB](https://github.com/j-selby/oxidgb) to the 
 [Raspberry Pi Pico](https://www.raspberrypi.org/documentation/rp2040/getting-started/).
 
+Note that this by default **overclocks your device** - you have been warned! 
+
 Prerequisites
 -------------
 
