@@ -13,7 +13,7 @@ use core::fmt::Debug;
 
 use defmt::*;
 
-use crate::{AcceleratedBlit, BlitBuffer, GAME_DATA};
+use crate::{AcceleratedBlit, BlitBuffer, Flushable, GAME_DATA};
 
 use oxidgb_core::cpu::CPU;
 use oxidgb_core::rom::GameROM;
@@ -41,7 +41,11 @@ pub struct DisplayProperties {
 /// * properties: Display properties
 /// * blit_buffer: Buffer used for converting core graphics
 /// * delay: A timing source for sleeping before the loop starts
-pub fn run<D: DrawTarget + AcceleratedBlit, SleepFunc: FnOnce(), InputFunc: Fn() -> GameboyInput>(
+pub fn run<
+    D: DrawTarget + AcceleratedBlit + Flushable,
+    SleepFunc: FnOnce(),
+    InputFunc: Fn() -> GameboyInput,
+>(
     mut display: D,
     palette: ColorPalette<D::Color>,
     properties: DisplayProperties,
@@ -88,14 +92,24 @@ where
     .unwrap();
 
     let text = "Oxidgb";
-    let width = text.len() as i32 * 16;
+
+    let width = text.len() as i32
+        * if properties.display_width < 100 {
+            7
+        } else {
+            16
+        };
     Text::with_text_style(
         text,
         Point::new(
             properties.display_width as i32 / 2 - width / 2 + properties.x_offset as i32,
             properties.display_height as i32 / 2 - 18 + properties.y_offset as i32,
         ),
-        text_style,
+        if properties.display_width < 100 {
+            small_text_style
+        } else {
+            text_style
+        },
         text_render_style,
     )
     .draw(&mut display)
@@ -115,6 +129,8 @@ where
     .draw(&mut display)
     .unwrap();
 
+    display.flush();
+
     // Build memory
     let memory = GBMemory::build(rom);
 
@@ -133,5 +149,6 @@ where
         cpu.run();
 
         display.set_pixels(&cpu.mem.gpu, &properties, &mut blit_buffer);
+        display.flush();
     }
 }

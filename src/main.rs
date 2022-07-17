@@ -72,7 +72,6 @@ use alloc_cortex_m::CortexMHeap;
 pub use rp_pico as bsp;
 // use sparkfun_pro_micro_rp2040 as bsp;
 
-#[cfg(feature = "st7789_display_driver")]
 use bsp::hal::Clock;
 use bsp::hal::{self, pac, sio::Sio, watchdog::Watchdog};
 
@@ -102,9 +101,6 @@ pub struct BlitBuffer {
     #[cfg(feature = "st7789_display_driver")]
     // properties.display_width * properties.display_height, RGB565
     buffer: Vec<u16>,
-    #[cfg(feature = "ssd1306_display_driver")]
-    // (properties.display_width * properties.display_height) / 8, Binary
-    buffer: Vec<u8>,
 }
 
 /// Provides an interface to directly blit pixels to the screen.
@@ -174,24 +170,93 @@ where
         // Pack data for this screen
         for y in 0..y_max {
             for x in 0..x_max {
-                let offset = (y * 160 + x) * PITCH;
-                let on = gpu.pixel_data[offset] > 128;
+                let on = if properties.display_width < 160 {
+                    // Attempt to scale the screen
+                    let mut on_fields = 0;
+
+                    for y_add in 0..3 {
+                        let modded_y = y * 3 + y_add;
+                        if modded_y >= 144 {
+                            break;
+                        }
+
+                        for x_add in 0..2 {
+                            let modded_x = x * 2 + x_add;
+                            if modded_x >= 160 {
+                                break;
+                            }
+
+                            let offset = (modded_y * 160 + modded_x) * PITCH;
+
+                            if gpu.pixel_data[offset] > 128 {
+                                on_fields += 1;
+                            }
+                        }
+                    }
+
+                    on_fields > 2
+                } else {
+                    let offset = (y * 160 + x) * PITCH;
+
+                    gpu.pixel_data[offset] > 128
+                };
+
                 let i = y * properties.display_width + x;
-                if on {
+                /*if on {
                     buffer.buffer[i / 8] |= 1u8 << (i % 8);
                 } else {
                     buffer.buffer[i / 8] &= !(1u8 << (i % 8));
-                }
+                }*/
+                self.set_pixel(x as _, y as _, on);
             }
         }
 
+        /*self.set_draw_area(
+            (0, 0),
+            (
+                properties.display_width as u8,
+                properties.display_height as u8,
+            ),
+        )
+        .unwrap();
         self.bounded_draw(
             &buffer.buffer,
             properties.display_width,
             (0, 0),
-            (x_max as u8, y_max as u8),
+            (
+                properties.display_width as u8,
+                properties.display_height as u8,
+            ),
         )
-        .unwrap();
+        .unwrap();*/
+        self.flush().unwrap();
+    }
+}
+
+pub trait Flushable {
+    fn flush(&mut self);
+}
+
+#[cfg(feature = "st7789_display_driver")]
+impl<DI, OUT> Flushable for st7789::ST7789<DI, OUT>
+where
+    DI: display_interface::WriteOnlyDataCommand,
+    OUT: OutputPin,
+    OUT::Error: core::fmt::Debug,
+{
+    fn flush(&mut self) {
+        // Not needed.
+    }
+}
+
+#[cfg(feature = "ssd1306_display_driver")]
+impl<DI, SIZE> Flushable for ssd1306::Ssd1306<DI, SIZE, ssd1306::mode::BufferedGraphicsMode<SIZE>>
+where
+    DI: display_interface::WriteOnlyDataCommand,
+    SIZE: ssd1306::size::DisplaySize,
+{
+    fn flush(&mut self) {
+        self.flush().unwrap();
     }
 }
 
@@ -401,23 +466,33 @@ fn main() -> ! {
         #define THUMBY_SCREEN_HEIGHT 40
         */
 
-        // Configure two pins as being I²C, not GPIO
-        let sda_pin = pins.gpio16.into_mode::<hal::gpio::FunctionI2C>();
-        let scl_pin = pins.gpio17.into_mode::<hal::gpio::FunctionI2C>();
+        // These are implicitly used by the spi driver if they are in the correct mode
+        let _spi_sclk = pins.gpio18.into_mode::<hal::gpio::FunctionSpi>();
+        let _spi_mosi = pins.gpio19.into_mode::<hal::gpio::FunctionSpi>();
+        // We're using what would normally be the miso pin for data/command
+        let dc = pins.gpio17.into_push_pull_output();
+        // Chip select
+        let cs = pins.gpio16.into_push_pull_output();
+        // Backlight
+        //let bl = pins.gpio20.into_push_pull_output();
 
-        // Create the I²C driver, using the two pre-configured pins. This will fail
-        // at compile time if the pins are in the wrong mode, or if this I²C
-        // peripheral isn't available on these pins!
-        let i2c = hal::I2C::i2c0(
-            pac.I2C0,
-            sda_pin,
-            scl_pin,
-            400.kHz(),
+        // Setup and init the SPI device
+        let spi = bsp::hal::Spi::<_, _, 8>::new(pac.SPI0);
+
+        let spi = spi.init(
             &mut pac.RESETS,
-            clocks.peripheral_clock,
+            clocks.peripheral_clock.freq(),
+            16_000_000u32.Hz(),
+            &embedded_hal::spi::MODE_3,
         );
 
-        let interface = ssd1306::I2CDisplayInterface::new(i2c);
+        let mut rst = pins.gpio20.into_push_pull_output();
+        rst.set_low().unwrap();
+        delay.delay_ms(10);
+        rst.set_high().unwrap();
+        delay.delay_ms(10);
+
+        let interface = ssd1306::prelude::SPIInterface::new(spi, dc, cs);
 
         // Set properties of the screen we are using
         let properties = DisplayProperties {
@@ -509,6 +584,10 @@ fn main() -> ! {
         let mut display = ssd1306::Ssd1306::new(display_interface, display_size, display_rotation)
             .into_buffered_graphics_mode();
         display.init().unwrap();
+        display.set_display_on(true).unwrap();
+        display
+            .set_brightness(ssd1306::prelude::Brightness::NORMAL)
+            .unwrap();
 
         let palette = ColorPalette {
             splash_bg: BinaryColor::Off,
@@ -528,9 +607,7 @@ fn main() -> ! {
     };
 
     #[cfg(feature = "ssd1306_display_driver")]
-    let blit_buffer = BlitBuffer {
-        buffer: vec![0u8; (properties.display_width * properties.display_height) / 8],
-    };
+    let blit_buffer = BlitBuffer {};
 
     info!("Framebuffer allocated.");
 

@@ -1,4 +1,3 @@
-#[cfg(feature = "st7789_display_driver")]
 use crate::bsp::hal::Clock;
 use crate::bsp::{
     hal::{
