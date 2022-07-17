@@ -45,6 +45,7 @@ pub fn run<
     D: DrawTarget + AcceleratedBlit + Flushable,
     SleepFunc: FnOnce(),
     InputFunc: Fn() -> GameboyInput,
+    SaveFunc: Fn(&[u8]),
 >(
     mut display: D,
     palette: ColorPalette<D::Color>,
@@ -52,6 +53,7 @@ pub fn run<
     mut blit_buffer: BlitBuffer,
     delay: SleepFunc,
     input: InputFunc,
+    save: SaveFunc,
 ) -> !
 where
     D::Error: Debug,
@@ -150,5 +152,7 @@ where
 
         display.set_pixels(&cpu.mem.gpu, &properties, &mut blit_buffer);
         display.flush();
+
+        save(&cpu.mem.rom.cart_ram);
     }
 }

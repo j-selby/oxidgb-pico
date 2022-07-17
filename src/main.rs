@@ -72,8 +72,8 @@ use alloc_cortex_m::CortexMHeap;
 pub use rp_pico as bsp;
 // use sparkfun_pro_micro_rp2040 as bsp;
 
-use bsp::hal::Clock;
 use bsp::hal::{self, pac, sio::Sio, watchdog::Watchdog};
+use bsp::hal::{rom_data::flash_range_program, Clock};
 
 use embedded_hal::digital::v2::OutputPin;
 
@@ -265,6 +265,10 @@ const HEAP_SIZE: usize = 245 * 1024;
 
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
+
+const SAVE_DATA_SIZE: usize = 128 * 1024;
+#[link_section = ".savegame"]
+static SAVE_DATA: [MaybeUninit<u8>; SAVE_DATA_SIZE] = [MaybeUninit::uninit(); SAVE_DATA_SIZE];
 
 /// Crash indicator
 fn crash_loop() -> ! {
@@ -618,5 +622,12 @@ fn main() -> ! {
         blit_buffer,
         || delay.delay_ms(2000),
         input,
+        |data| {
+            if data.len() > 0 {
+                unsafe {
+                    flash_range_program(SAVE_DATA.as_ptr() as _, data.as_ptr(), data.len());
+                }
+            }
+        },
     )
 }
